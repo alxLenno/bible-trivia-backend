@@ -545,5 +545,33 @@ def ai_trivia_route():
     result = handle_generate_trivia(data.get('prompt'))
     return jsonify(result)
 
+@app.route('/api/export', methods=['POST'])
+def export_results():
+    try:
+        from export import generate_export_file, generate_filename
+        import io
+        from flask import send_file
+        
+        data = request.json
+        fmt = data.get('format', 'pdf')
+        score = data.get('score', 0)
+        questions = data.get('questions', [])
+        user_answers = data.get('userAnswers', [])
+        config = data.get('config', {})
+        
+        file_bytes = generate_export_file(score, questions, user_answers, config, fmt)
+        filename = generate_filename(config, fmt)
+        mimetype = 'image/png' if fmt == 'png' else 'application/pdf'
+        
+        return send_file(
+            io.BytesIO(file_bytes),
+            mimetype=mimetype,
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        print(f"[ERROR] Export failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, port=5555)
