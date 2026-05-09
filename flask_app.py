@@ -7,7 +7,7 @@ import time
 import os
 import xml.etree.ElementTree as ET
 import requests
-from ai_handler import handle_chat, handle_generate_trivia
+from ai_handler import handle_chat, handle_generate_trivia, handle_scriptorium_chat, handle_scriptorium_trivia
 
 app = Flask(__name__)
 # Allow CORS from your Vercel address and localhost
@@ -543,6 +543,30 @@ def ai_chat_route():
 def ai_trivia_route():
     data = request.json
     result = handle_generate_trivia(data.get('prompt'))
+    return jsonify(result)
+
+@app.route('/api/scriptorium/chat', methods=['POST'])
+def scriptorium_chat_route():
+    data = request.json
+    result = handle_scriptorium_chat(
+        data.get('message'), 
+        data.get('history', []), 
+        data.get('context', {})
+    )
+    return jsonify(result)
+
+@app.route('/api/scriptorium/trivia', methods=['POST'])
+def scriptorium_trivia_route():
+    data = request.json
+    result = handle_scriptorium_trivia(
+        mode=data.get('mode'),
+        target=data.get('target'),
+        count=data.get('count', 5),
+        version=data.get('version', 'KJV'),
+        difficulty=data.get('difficulty', 'scriptorium'),
+        language=data.get('language', 'en'),
+        book_name=data.get('book_name')
+    )
     return jsonify(result)
 
 @app.route('/api/export', methods=['POST'])

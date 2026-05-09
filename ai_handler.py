@@ -2,6 +2,10 @@ import os
 import json
 import requests
 import re
+from scriptorium import build_scriptorium_prompt
+from scriptorium.genre_detector import detect_genre
+from scriptorium.dual_scalpel import get_scalpel_context
+from scriptorium.trivia_engine import build_scriptorium_trivia_prompt
 
 # AI Configuration
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
@@ -12,11 +16,16 @@ HF_CHAT_URL = "https://lennoxkk-trivia-model.hf.space/chat"
 HF_TRIVIA_URL = "https://lennoxkk-trivia-model.hf.space/api/generate_trivia"
 
 MODEL_MAP = {
+    # --- Standard Chat ---
     "llama-3-8b": "llama-3.1-8b-instant",
-    "llama-3-70b": "llama-3.1-70b-versatile",
-    "mixtral": "mixtral-8x7b-32768",
-    "gemma": "gemma2-9b-it"
+    "llama-3-70b": "llama-3.3-70b-versatile",
+    
+    # --- Scriptorium ---
+    "gpt-oss-120b": "openai/gpt-oss-120b",
+    "qwen3-32b": "qwen/qwen3-32b"
 }
+
+SCRIPTORIUM_DEFAULT_MODEL = "gpt-oss-120b"
 
 def handle_chat(message, history=None, model_id="llama-3-8b"):
     """Handles AI chat with Groq and Hugging Face fallback."""
@@ -135,3 +144,135 @@ def handle_generate_trivia(prompt):
         print(f"[!] Hugging Face Trivia fallback failed: {e}")
 
     return {"success": False, "error": "All AI backends failed"}
+
+def handle_scriptorium_chat(message, history=None, context=None):
+    """Handles chat specifically routed through the Scriptorium framework."""
+    if history is None:
+        history = []
+        
+    language = context.get('language', 'en') if context else 'en'
+    book = context.get('book', '') if context else ''
+    chapter = context.get('chapter', None) if context else None
+    turn_count = context.get('turn_count', len(history) // 2) if context else len(history) // 2
+    passage = context.get('passage_text', '') if context else ''
+    
+    # Detect genre
+    genre = detect_genre(book, chapter)
+    
+    # Get Dual Scalpel data for Swahili
+    scalpel_data = get_scalpel_context(message + " " + passage) if language == 'sw' else None
+    
+    # Build the enhanced system prompt
+    system_prompt = build_scriptorium_prompt(
+        user_message=message,
+        passage_context=passage,
+        language=language,
+        genre=genre,
+        turn_count=turn_count,
+        scalpel_data=scalpel_data
+    )
+    
+    try:
+        print(f"[*] Attempting Scriptorium Chat with model {SCRIPTORIUM_DEFAULT_MODEL}...")
+        groq_payload = {
+            "model": MODEL_MAP[SCRIPTORIUM_DEFAULT_MODEL],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *history,
+                {"role": "user", "content": message}
+            ],
+            "temperature": 0.6, # Slightly lower for deeper theological reasoning
+            "max_tokens": 1500
+        }
+        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=25)
+        if resp.ok:
+            result = resp.json()
+            return {
+                "success": True,
+                "response": result['choices'][0]['message']['content'],
+                "source": "groq",
+                "scriptorium_active": True,
+                "genre_detected": genre
+            }
+            
+        # Fallback to 70b
+        fallback_model = MODEL_MAP["llama-3-70b"]
+        print(f"[!] Primary failed. Falling back to Scriptorium Chat with {fallback_model}...")
+        groq_payload["model"] = fallback_model
+        resp2 = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=20)
+        if resp2.ok:
+            result = resp2.json()
+            return {
+                "success": True,
+                "response": result['choices'][0]['message']['content'],
+                "source": "groq",
+                "scriptorium_active": True,
+                "genre_detected": genre
+            }
+            
+    except Exception as e:
+        print(f"[!] Scriptorium Chat exception: {e}")
+        
+    return {"success": False, "error": "Scriptorium backend failed"}
+
+def handle_scriptorium_trivia(mode, target, count, version, difficulty, language, book_name=None):
+    """Handles enhanced trivia generation for the Scriptorium framework."""
+    
+    genre = detect_genre(book_name) if book_name else detect_genre(target if mode == 'book' else None)
+    scalpel_data = get_scalpel_context(target) if language == 'sw' else None
+    
+    prompt = build_scriptorium_trivia_prompt(
+        mode=mode,
+        target=target,
+        count=count,
+        version=version,
+        difficulty=difficulty,
+        language=language,
+        genre=genre,
+        scalpel_data=scalpel_data
+    )
+    
+    try:
+        print(f"[*] Attempting Scriptorium Trivia with model {SCRIPTORIUM_DEFAULT_MODEL}...")
+        groq_payload = {
+            "model": MODEL_MAP[SCRIPTORIUM_DEFAULT_MODEL],
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.8,
+            "response_format": {"type": "json_object"}
+        }
+        
+        # 120b doesn't strictly support json_object in the same way sometimes, so we ensure the prompt is very strict
+        # and fallback to 70b if it fails parsing
+        
+        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=30)
+        
+        if not resp.ok:
+            print(f"[!] Primary failed. Falling back to Scriptorium Trivia with {MODEL_MAP['llama-3-70b']}...")
+            groq_payload["model"] = MODEL_MAP["llama-3-70b"]
+            resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=30)
+            
+        if resp.ok:
+            result = resp.json()
+            content = result['choices'][0]['message']['content']
+            parsed = json.loads(content)
+            
+            # Extract array if wrapped in object
+            if not isinstance(parsed, list):
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        parsed = v
+                        break
+            
+            return {
+                "success": True,
+                "response": parsed,
+                "source": "groq",
+                "scriptorium_active": True
+            }
+            
+    except Exception as e:
+        print(f"[!] Scriptorium Trivia exception: {e}")
+        
+    return {"success": False, "error": "Scriptorium trivia generation failed"}
