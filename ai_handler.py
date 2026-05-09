@@ -195,6 +195,9 @@ def handle_scriptorium_chat(message, history=None, context=None):
                 "genre_detected": genre
             }
             
+        else:
+            print(f"[!] Primary Groq failed: {resp.status_code} - {resp.text}")
+            
         # Fallback to 70b
         fallback_model = MODEL_MAP["llama-3-70b"]
         print(f"[!] Primary failed. Falling back to Scriptorium Chat with {fallback_model}...")
@@ -209,6 +212,8 @@ def handle_scriptorium_chat(message, history=None, context=None):
                 "scriptorium_active": True,
                 "genre_detected": genre
             }
+        else:
+            print(f"[!] Fallback Groq failed: {resp2.status_code} - {resp2.text}")
             
     except Exception as e:
         print(f"[!] Scriptorium Chat exception: {e}")
@@ -240,22 +245,27 @@ def handle_scriptorium_trivia(mode, target, count, version, difficulty, language
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.8,
+            "max_tokens": 4096,
             "response_format": {"type": "json_object"}
         }
         
         # 120b doesn't strictly support json_object in the same way sometimes, so we ensure the prompt is very strict
         # and fallback to 70b if it fails parsing
         
-        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=30)
+        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=45)
         
         if not resp.ok:
-            print(f"[!] Primary failed. Falling back to Scriptorium Trivia with {MODEL_MAP['llama-3-70b']}...")
+            print(f"[!] Primary failed ({resp.status_code}): {resp.text[:200]}")
+            print(f"[!] Falling back to Scriptorium Trivia with {MODEL_MAP['llama-3-70b']}...")
             groq_payload["model"] = MODEL_MAP["llama-3-70b"]
-            resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=30)
+            resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=45)
             
         if resp.ok:
             result = resp.json()
             content = result['choices'][0]['message']['content']
+            finish_reason = result['choices'][0].get('finish_reason', 'unknown')
+            print(f"[*] Scriptorium Trivia response received. Finish reason: {finish_reason}, Content length: {len(content)} chars")
+            
             parsed = json.loads(content)
             
             # Extract array if wrapped in object
@@ -264,6 +274,8 @@ def handle_scriptorium_trivia(mode, target, count, version, difficulty, language
                     if isinstance(v, list):
                         parsed = v
                         break
+            
+            print(f"[*] Scriptorium generated {len(parsed)} questions (requested {count})")
             
             return {
                 "success": True,
