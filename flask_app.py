@@ -1,5 +1,10 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from dotenv import load_dotenv
+
+# Load environment variables FIRST
+load_dotenv()
+
 import sqlite3
 import json
 import random
