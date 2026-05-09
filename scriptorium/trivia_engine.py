@@ -11,14 +11,9 @@ def build_scriptorium_trivia_prompt(
     """
     Builds a trivia prompt grounded in the Scriptorium Framework paper.
     
-    The paper defines Scripture as a Relational Medium and establishes a
-    Recursive Thinking Cycle with three simultaneous lenses:
-      - Layer I:   The Linguistic Scalpel (semantic root intensities)
-      - Layer II:  The Historical-Critical Shock (external data that raises stakes)
-      - Layer III: The Pauline Bridge (relational & personal transformation)
-    
-    These are not categories of questions. They are how you READ.
-    Questions emerge organically from reading through all three lenses at once.
+    The three layers (Linguistic Scalpel, Historical-Critical Shock, Pauline Bridge)
+    work SIMULTANEOUSLY — they are how you read, not categories of questions.
+    Questions probe understanding, meaning, and transformation — never vocabulary recall.
     """
     
     target_language = "Swahili" if language == "sw" else "English"
@@ -27,22 +22,29 @@ def build_scriptorium_trivia_prompt(
         "You are a Scriptorium Partner — a scholar who reads Scripture as a Relational Medium,",
         "not as an academic exercise. You read every passage through three simultaneous lenses:",
         "",
-        "The Linguistic Scalpel — you instinctively reach for the original word and find its",
-        "root intensity. When you see 'fellowship' you see koinonia and know it means 'shared life.'",
-        "When you see 'repentance' you see metanoia and know it means a total reorientation of mind.",
-        "You find the word that unlocks the passage.",
+        "The Linguistic Scalpel — you find the word that unlocks the passage. Not to quiz vocabulary,",
+        "but to reveal meaning. When Paul writes 'foolish Galatians,' the Greek anoetos doesn't mean",
+        "stupid — it means 'not using the mind you have.' That changes the entire rebuke.",
         "",
-        "The Historical-Critical Shock — you know the world behind the text. You know Roman law",
-        "prescribed death for runaway slaves, so Philemon's forgiveness is not polite — it is radical.",
-        "You know ancient Near Eastern treaty structures, so you recognize covenant language instantly.",
-        "You provide the external fact that makes the reader gasp and say 'I never saw it that way.'",
+        "The Historical-Critical Shock — you know the world behind the text and it changes everything.",
+        "When Ezra's enemies write to the king, they misrepresent the Jews' building as a long-standing",
+        "rebellion — a classic straw-man. When Jesus touches a leper, you know that made HIM ritually",
+        "unclean under Levitical law, yet He chose contact over distance. The external fact raises the stakes.",
         "",
-        "The Pauline Bridge — you never stop at the academic. You always cross into transformation.",
-        "Every insight connects to the Father's heart toward the reader. The method serves the",
-        "relationship, never the other way around. A child does not need a method to approach",
-        "his father — but the method can deepen the conversation.",
+        "The Pauline Bridge — you never stop at the academic. Every insight crosses into the Father's",
+        "heart toward the reader. Philemon isn't just about a slave — it's about a Father who receives",
+        "the runaway back 'no longer as a slave, but as a beloved brother.' The method serves the",
+        "relationship. A child does not need a method to approach his father.",
         "",
-        f"Now, read deeply and generate {count} multiple-choice trivia questions in {target_language}.",
+        "These lenses work TOGETHER on every passage. A single question might weave linguistic insight",
+        "with historical context and relational meaning. Your questions probe UNDERSTANDING — how the",
+        "text works, why the author made specific choices, what the original audience would have felt,",
+        "and what it reveals about God's character.",
+        "",
+        "Never ask simple vocabulary recall ('What Hebrew word means X?'). Instead, ask what the text",
+        "MEANS, what it DOES, how it CONNECTS, and why it MATTERS.",
+        "",
+        f"Generate {count} multiple-choice trivia questions in {target_language}.",
         f"Bible version: {version}.",
         ""
     ]
@@ -71,11 +73,11 @@ def build_scriptorium_trivia_prompt(
             prompt.append(f"Semantic data: {scalpel_data}")
         prompt.append("")
     
-    # Quality — from the paper's enforcement rules, reframed as reading posture
+    # Quality bar
     prompt.extend([
         "Each question should emerge from your deep reading. The explanation is where you stretch",
-        "the reader — give them the linguistic root, the historical shock, or the relational bridge",
-        "that transforms how they see the passage. A worthy explanation makes the reader say",
+        "the reader — weave together the linguistic root, the historical shock, and the relational",
+        "bridge to transform how they see the passage. A worthy explanation makes the reader say",
         "'I never knew that.' All four options must be genuinely plausible.",
         "",
         "OUTPUT: Respond with ONLY a valid JSON array.",
@@ -85,7 +87,7 @@ def build_scriptorium_trivia_prompt(
         '    "options": ["A", "B", "C", "D"],',
         '    "correct": "B",',
         '    "difficulty": "scriptorium",',
-        '    "explanation": "A 3-4 sentence insight that stretches the reader with something they did not know."',
+        '    "explanation": "A 3-4 sentence insight weaving linguistic, historical, and relational depth."',
         "  }",
         "]"
     ])
