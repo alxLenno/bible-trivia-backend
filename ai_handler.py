@@ -10,6 +10,7 @@ from scriptorium.trivia_engine import build_scriptorium_trivia_prompt
 # AI Configuration
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
+print(f"[DEBUG] GROQ_API_KEY loaded: '{GROQ_API_KEY[:6]}...{GROQ_API_KEY[-4:]}' (len={len(GROQ_API_KEY)})" if GROQ_API_KEY else "[DEBUG] GROQ_API_KEY loaded: EMPTY")
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 HF_CHAT_URL = "https://lennoxkk-trivia-model.hf.space/chat"
