@@ -17,9 +17,12 @@ HF_TRIVIA_URL = "https://lennoxkk-trivia-model.hf.space/api/generate_trivia"
 
 MODEL_MAP = {
     # --- Standard Chat ---
-    "llama-3-8b": "llama-3.1-8b-instant",
-    "llama-3-70b": "llama-3.3-70b-versatile",
-    
+    # llama-3.1-8b-instant and llama-3.3-70b-versatile were retired by Groq
+    # on 08/16/26 ("model_not_found" on every request since) — replaced
+    # with Groq's current recommended equivalents.
+    "llama-3-8b": "openai/gpt-oss-20b",
+    "llama-3-70b": "openai/gpt-oss-120b",
+
     # --- Scriptorium ---
     "gpt-oss-120b": "openai/gpt-oss-120b",
     "qwen3-32b": "qwen/qwen3-32b"
@@ -86,7 +89,7 @@ def handle_generate_trivia(prompt):
     try:
         print("[*] Attempting Groq Trivia Generation...")
         groq_payload = {
-            "model": "llama-3.1-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "messages": [
                 {"role": "system", "content": "You are a Bible trivia generator. Output ONLY a valid JSON array of questions."},
                 {"role": "user", "content": prompt}
