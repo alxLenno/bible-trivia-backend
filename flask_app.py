@@ -3,7 +3,10 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 
 # Load environment variables FIRST
-load_dotenv()
+# override=True: PythonAnywhere's WSGI process can inherit stale env vars
+# (e.g. from the Web tab's "Environment variables" section) that would
+# otherwise silently take precedence over this .env file.
+load_dotenv(override=True)
 
 import sqlite3
 import json
