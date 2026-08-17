@@ -2,17 +2,19 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load environment variables FIRST
-# override=True: PythonAnywhere's WSGI process can inherit stale env vars
-# (e.g. from the Web tab's "Environment variables" section) that would
-# otherwise silently take precedence over this .env file.
-load_dotenv(override=True)
+import os
+
+# Load environment variables FIRST.
+# Pass an explicit path instead of relying on load_dotenv()'s stack-frame
+# lookup: under uWSGI that lookup falls back to the process's cwd (the
+# account home dir), not this file's directory, so it never found the
+# .env file living right next to this script.
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'), override=True)
 
 import sqlite3
 import json
 import random
 import time
-import os
 import xml.etree.ElementTree as ET
 import requests
 from ai_handler import handle_chat, handle_generate_trivia, handle_scriptorium_chat, handle_scriptorium_trivia
