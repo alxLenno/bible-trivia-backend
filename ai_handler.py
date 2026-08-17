@@ -48,9 +48,14 @@ def handle_chat(message, history=None, model_id="llama-3-8b"):
                 {"role": "user", "content": message}
             ],
             "temperature": 0.7,
-            "max_tokens": 1024
+            # gpt-oss models spend tokens on internal reasoning before any
+            # visible output — 1024 was tight enough that longer prompts
+            # (e.g. cleaning a full scraped lyrics page) burned the whole
+            # budget mid-reasoning and returned empty content while still
+            # reporting success.
+            "max_tokens": 4096
         }
-        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=10)
+        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=25)
         if resp.ok:
             result = resp.json()
             return {
