@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import re
+import time
 from scriptorium import build_scriptorium_prompt
 from scriptorium.genre_detector import detect_genre
 from scriptorium.dual_scalpel import get_scalpel_context
@@ -36,36 +37,44 @@ def handle_chat(message, history=None, model_id="llama-3-8b"):
     if history is None or not isinstance(history, list):
         history = []
         
-    # 1. Try Groq (Fast Choice)
+    # 1. Try Groq (Fast Choice), retrying once — the Hugging Face fallback
+    # below has its own unrelated stale-model bug on a Space we don't
+    # control (returns "success": true with an error string as the
+    # "response" text), so a transient/rate-limit-y Groq failure shouldn't
+    # fall straight through to that. Confirmed via direct testing: identical
+    # requests occasionally fail once but succeed on an immediate retry.
     groq_model = MODEL_MAP.get(model_id, MODEL_MAP["llama-3-8b"])
-    try:
-        print(f"[*] Attempting Groq Chat with model {groq_model}...")
-        groq_payload = {
-            "model": groq_model,
-            "messages": [
-                {"role": "system", "content": "You are the AI Scribe, a knowledgeable biblical scholar. Help users understand sacred texts, explain history, and answer questions about the Bible accurately and respectfully."},
-                *history,
-                {"role": "user", "content": message}
-            ],
-            "temperature": 0.7,
-            # gpt-oss models spend tokens on internal reasoning before any
-            # visible output. 1024 returned empty content on longer prompts
-            # (reasoning alone exhausted it); 4096 was an improvement but
-            # still truncated mid-output on a full lyrics-cleanup prompt —
-            # confirmed by direct testing, not a guess.
-            "max_tokens": 8192
-        }
-        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=35)
-        if resp.ok:
-            result = resp.json()
-            return {
-                "success": True,
-                "response": result['choices'][0]['message']['content'],
-                "source": "groq"
-            }
-        print(f"[!] Groq failed: {resp.status_code}")
-    except Exception as e:
-        print(f"[!] Groq exception: {e}")
+    groq_payload = {
+        "model": groq_model,
+        "messages": [
+            {"role": "system", "content": "You are the AI Scribe, a knowledgeable biblical scholar. Help users understand sacred texts, explain history, and answer questions about the Bible accurately and respectfully."},
+            *history,
+            {"role": "user", "content": message}
+        ],
+        "temperature": 0.7,
+        # gpt-oss models spend tokens on internal reasoning before any
+        # visible output. 1024 returned empty content on longer prompts
+        # (reasoning alone exhausted it); 4096 was an improvement but
+        # still truncated mid-output on a full lyrics-cleanup prompt —
+        # confirmed by direct testing, not a guess.
+        "max_tokens": 8192
+    }
+    for attempt in (1, 2):
+        try:
+            print(f"[*] Attempting Groq Chat with model {groq_model} (try {attempt})...")
+            resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=35)
+            if resp.ok:
+                result = resp.json()
+                return {
+                    "success": True,
+                    "response": result['choices'][0]['message']['content'],
+                    "source": "groq"
+                }
+            print(f"[!] Groq failed: {resp.status_code}")
+        except Exception as e:
+            print(f"[!] Groq exception: {e}")
+        if attempt == 1:
+            time.sleep(1)
 
     # 2. Fallback to Hugging Face
     try:
