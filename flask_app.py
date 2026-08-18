@@ -546,7 +546,7 @@ def lookup_verses():
 @app.route('/api/ai/chat', methods=['POST'])
 def ai_chat_route():
     data = request.json
-    result = handle_chat(data.get('message'), data.get('history', []), data.get('model_id', 'llama-3-8b'))
+    result = handle_chat(data.get('message'), data.get('history', []), data.get('model_id', 'llama-3-8b'), data.get('temperature', 0.7))
     return jsonify(result)
 
 @app.route('/api/ai/generate_trivia', methods=['POST'])

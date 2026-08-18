@@ -31,7 +31,7 @@ MODEL_MAP = {
 
 SCRIPTORIUM_DEFAULT_MODEL = "gpt-oss-120b"
 
-def handle_chat(message, history=None, model_id="llama-3-8b"):
+def handle_chat(message, history=None, model_id="llama-3-8b", temperature=0.7):
     """Handles AI chat with Groq and Hugging Face fallback."""
     # Ensure history is a valid list
     if history is None or not isinstance(history, list):
@@ -51,7 +51,7 @@ def handle_chat(message, history=None, model_id="llama-3-8b"):
             *history,
             {"role": "user", "content": message}
         ],
-        "temperature": 0.7,
+        "temperature": temperature,
         # gpt-oss models spend tokens on internal reasoning before any
         # visible output. 1024 returned empty content on longer prompts
         # (reasoning alone exhausted it); 4096 was an improvement but
