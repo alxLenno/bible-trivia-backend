@@ -575,7 +575,8 @@ def scriptorium_trivia_route():
         version=data.get('version', 'KJV'),
         difficulty=data.get('difficulty', 'scriptorium'),
         language=data.get('language', 'en'),
-        book_name=data.get('book_name')
+        book_name=data.get('book_name'),
+        excluded_questions=data.get('excluded_questions', [])
     )
     return jsonify(result)
 

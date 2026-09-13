@@ -3,305 +3,388 @@ import json
 import requests
 import re
 import time
+import random
 from scriptorium import build_scriptorium_prompt
 from scriptorium.genre_detector import detect_genre
 from scriptorium.dual_scalpel import get_scalpel_context
 from scriptorium.trivia_engine import build_scriptorium_trivia_prompt
 
-# AI Configuration
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
+# ── API Keys ─────────────────────────────────────────────────────────────────
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
 
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-HF_CHAT_URL = "https://lennoxkk-trivia-model.hf.space/chat"
-HF_TRIVIA_URL = "https://lennoxkk-trivia-model.hf.space/api/generate_trivia"
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 
-MODEL_MAP = {
-    # --- Standard Chat ---
-    # llama-3.1-8b-instant and llama-3.3-70b-versatile were retired by Groq
-    # on 08/16/26 ("model_not_found" on every request since) — replaced
-    # with Groq's current recommended equivalents.
-    "llama-3-8b": "openai/gpt-oss-20b",
-    "llama-3-70b": "openai/gpt-oss-120b",
+# ── Models ────────────────────────────────────────────────────────────────────
+GEMINI_FLASH        = "gemini-3.5-flash-lite"
+GEMINI_PRO          = "gemini-3.5-flash-lite"
+GROQ_FALLBACK_CHAT  = "openai/gpt-oss-20b"
+GROQ_FALLBACK_HEAVY = "openai/gpt-oss-120b"
 
-    # --- Scriptorium ---
-    "gpt-oss-120b": "openai/gpt-oss-120b",
-    "qwen3-32b": "qwen/qwen3-32b"
+SCRIPTORIUM_DEFAULT_MODEL = GEMINI_PRO
+
+# ── Shared POST helper ────────────────────────────────────────────────────────
+def _post(url, key, payload, timeout=40):
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+# ── JSON parser (strips markdown fences) ─────────────────────────────────────
+def _parse_json_array(content):
+    content = re.sub(r'^```(?:json)?\s*', '', content.strip(), flags=re.MULTILINE)
+    content = re.sub(r'\s*```$', '', content.strip(), flags=re.MULTILINE)
+    parsed = json.loads(content)
+    if not isinstance(parsed, list):
+        for v in parsed.values():
+            if isinstance(v, list):
+                return v
+    return parsed
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  DIFFICULTY-PROGRESSIVE TRIVIA PROMPT BUILDER
+# ─────────────────────────────────────────────────────────────────────────────
+_QUESTION_ANGLES = [
+    "Explore lesser-known minor characters and obscure scriptural details.",
+    "Focus on numbers, quantities, ages, durations, and biblical measurements.",
+    "Focus on the exact sequence of events and cause-and-effect chains.",
+    "Focus on direct quotes: who said what, to whom, and in what context.",
+    "Focus on geography: mountains, rivers, seas, cities, and named nations.",
+    "Focus on genealogy, tribal lineages, and ancestral family relationships.",
+    "Focus on miracles, divine judgments, and supernatural interventions.",
+    "Focus on symbolic objects, visions, garments, and sacred instruments.",
+    "Focus on covenants: their terms, signatories, conditions, and consequences.",
+    "Focus on contrasts and parallels between Old and New Testament figures.",
+]
+
+_QUESTION_TYPES = [
+    "Who (person / author / speaker / prophet)",
+    "What (event / object / miracle / commandment / offering)",
+    "Where (place / geography / direction / region)",
+    "How many (number / count / duration / age / quantity)",
+    "Why (motivation / theological reason / divine purpose)",
+    "What happened next (sequence / immediate consequence)",
+    "Which (distinction between similar biblical figures or places)",
+    "How (method / process / divine instruction / manner)",
+]
+
+_DIFFICULTY_GUIDE = {
+    "easy": (
+        "EASY — Direct factual recall. Single-hop answers found explicitly in one verse.\n"
+        "• Questions about well-known names, famous events, and clear facts.\n"
+        "• The correct answer is stated plainly in the text with no inference needed.\n"
+        "• Wrong options are clearly different — no tricky near-misses.\n"
+        "• Example: 'Who built the ark?' Answer: Noah (Genesis 6:14).\n"
+        "• Suitable for children and new Bible readers."
+    ),
+    "medium": (
+        "MEDIUM — Contextual understanding. Requires knowing the surrounding narrative.\n"
+        "• Questions about character relationships, motivations, and sequence.\n"
+        "• The correct answer requires context — not just one verse.\n"
+        "• Wrong options are plausible but distinguishable by a careful reader.\n"
+        "• Example: 'What material was used to make the Ark of the Covenant?' (Acacia wood, Exodus 25:10)\n"
+        "• Suitable for regular churchgoers and Sunday school teachers."
+    ),
+    "hard": (
+        "HARD — Cross-referential, theological, and symbolic depth.\n"
+        "• Involves prophecy fulfillment, typology, cross-book connections, or Greek/Hebrew nuance.\n"
+        "• Draws from less-known passages — the casual reader would likely get this wrong.\n"
+        "• Wrong options are highly plausible — only a serious student would get it right.\n"
+        "• Example: 'What Greek word in 1 Corinthians 13 describes the love that never fails?' (agape)\n"
+        "• Suitable for Bible scholars, seminary students, and serious students of the Word."
+    ),
 }
 
-SCRIPTORIUM_DEFAULT_MODEL = "gpt-oss-120b"
 
-def handle_chat(message, history=None, model_id="llama-3-8b", temperature=0.7):
-    """Handles AI chat with Groq and Hugging Face fallback."""
-    # Ensure history is a valid list
-    if history is None or not isinstance(history, list):
-        history = []
-        
-    # 1. Try Groq (Fast Choice), retrying once — the Hugging Face fallback
-    # below has its own unrelated stale-model bug on a Space we don't
-    # control (returns "success": true with an error string as the
-    # "response" text), so a transient/rate-limit-y Groq failure shouldn't
-    # fall straight through to that. Confirmed via direct testing: identical
-    # requests occasionally fail once but succeed on an immediate retry.
-    groq_model = MODEL_MAP.get(model_id, MODEL_MAP["llama-3-8b"])
-    groq_payload = {
-        "model": groq_model,
-        "messages": [
-            {"role": "system", "content": "You are the AI Scribe, a knowledgeable biblical scholar. Help users understand sacred texts, explain history, and answer questions about the Bible accurately and respectfully."},
-            *history,
-            {"role": "user", "content": message}
-        ],
-        "temperature": temperature,
-        # gpt-oss models spend tokens on internal reasoning before any
-        # visible output. 1024 returned empty content on longer prompts
-        # (reasoning alone exhausted it); 4096 was an improvement but
-        # still truncated mid-output on a full lyrics-cleanup prompt —
-        # confirmed by direct testing, not a guess.
-        "max_tokens": 8192
-    }
-    for attempt in (1, 2):
-        try:
-            print(f"[*] Attempting Groq Chat with model {groq_model} (try {attempt})...")
-            resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=35)
-            if resp.ok:
-                result = resp.json()
-                return {
-                    "success": True,
-                    "response": result['choices'][0]['message']['content'],
-                    "source": "groq"
-                }
-            print(f"[!] Groq failed: {resp.status_code}")
-        except Exception as e:
-            print(f"[!] Groq exception: {e}")
-        if attempt == 1:
-            time.sleep(1)
+def _build_trivia_prompt(mode, target, count, version, difficulty, language="en"):
+    seed  = int(time.time() * 1000) + random.randint(0, 9999)
+    angle = random.choice(_QUESTION_ANGLES)
+    types_pool = random.sample(_QUESTION_TYPES, min(count, len(_QUESTION_TYPES)))
+    types_str  = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(types_pool))
 
-    # 2. Fallback to Hugging Face
-    try:
-        print("[*] Falling back to Hugging Face Chat...")
-        hf_payload = {"message": message, "history": history}
-        resp = requests.post(HF_CHAT_URL, json=hf_payload, timeout=20)
-        if resp.ok:
-            result = resp.json()
-            return {
-                "success": True,
-                "response": result.get('response', result.get('text', '')),
-                "audio_url": result.get('audio_url'),
-                "source": "huggingface"
-            }
-    except Exception as e:
-        print(f"[!] Hugging Face fallback failed: {e}")
+    lang_map = {"en": "English", "sw": "Swahili", "nl": "Dutch"}
+    target_language = lang_map.get(language, "English")
+    diff_block = _DIFFICULTY_GUIDE.get(difficulty, _DIFFICULTY_GUIDE["medium"])
 
-    return {"success": False, "error": "All AI backends failed"}
+    if mode == "book":
+        scope = (
+            f"Focus EXCLUSIVELY on the Book of {target} ({version}).\n"
+            f"Every question must be directly answerable from {target} alone."
+        )
+    elif mode == "chapter" and isinstance(target, dict):
+        scope = (
+            f"Focus EXCLUSIVELY on {target['book']} Chapter {target['chapter']} ({version}).\n"
+            "Every question must be answerable from that single chapter."
+        )
+    elif mode == "topic":
+        scope = (
+            f"Focus on the biblical theme: \"{target}\".\n"
+            "Draw from both Old and New Testaments, showing how this theme develops across the canon."
+        )
+    else:
+        scope = (
+            f"Draw from the ENTIRE Bible — Old and New Testament ({version}).\n"
+            "Cover diverse books: Creation, Patriarchs, Exodus, Kings, Prophets, Gospels, Epistles, Revelation."
+        )
 
+    return f"""You are an expert Bible trivia question writer with deep knowledge of Scripture.
+Generate exactly {count} unique, high-quality multiple-choice trivia questions.
+
+LANGUAGE: All output MUST be written in {target_language}.
+
+SCOPE:
+{scope}
+
+DIFFICULTY: {difficulty.upper()}
+{diff_block}
+
+SPECIAL FOCUS FOR THIS BATCH (make most questions lean toward this angle):
+{angle}
+
+QUESTION TYPE ROTATION — use these types in order, never repeat the same type consecutively:
+{types_str}
+
+UNIQUENESS SEED (guarantees fresh, non-repetitive questions): {seed}
+
+════════════════════════════════════════════════════════════
+RULES — VIOLATING ANY OF THESE MAKES A QUESTION INVALID
+════════════════════════════════════════════════════════════
+
+1. FACTUAL ACCURACY (ABSOLUTE):
+   • Every question and answer MUST be verifiable from the actual biblical text.
+   • NEVER fabricate, invent, or assume details not explicitly in Scripture.
+   • If uncertain about a fact, skip it and write a different question instead.
+   • Every explanation MUST end with a real scripture reference in parentheses, e.g. (Genesis 3:15).
+
+2. NO ANSWER LEAKS (CRITICAL):
+   • The correct answer must NEVER appear as a word inside the question text.
+   • BAD: "Who was the ancestor of the tribe of Judah?" → answer: "Judah"  ← INVALID
+   • GOOD: "Which of Jacob's sons became the ancestor of Israel's royal tribe?" → answer: "Judah"
+   • Rephrase any question where the answer word naturally appears in it.
+
+3. PLAUSIBLE DISTRACTORS:
+   • All 4 options must be real biblical figures, places, numbers, or concepts.
+   • Wrong options should be close enough to trick someone who hasn't studied carefully.
+   • NEVER use "None of the above", "All of the above", or obviously fake options.
+
+4. QUESTION VARIETY:
+   • Each question must be a different type (Who / What / Where / How many / Why / etc.).
+   • NEVER ask "complete this verse" or "which verse says..."
+   • Each question must stand alone — no references to previous questions.
+
+5. EXPLANATION QUALITY:
+   • 2–3 sentences explaining WHY the correct answer is right.
+   • Briefly explain why the most plausible wrong option is incorrect.
+   • End with the scripture reference in parentheses.
+
+════════════════════════════════════════════════════════════
+OUTPUT FORMAT — RESPOND WITH ONLY A VALID JSON ARRAY. NO MARKDOWN. NO PREAMBLE.
+════════════════════════════════════════════════════════════
+[
+  {{
+    "question": "Standalone trivia question text (answer must NOT appear here)",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correct": "The exact correct option string (must match one of the four options exactly)",
+    "difficulty": "{difficulty}",
+    "explanation": "2-3 sentences explaining the correct answer and why key wrong options are wrong. (Scripture reference e.g. Exodus 17:6)"
+  }}
+]"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  TRIVIA GENERATION  (Gemini primary → Groq fallback)
+# ─────────────────────────────────────────────────────────────────────────────
 def handle_generate_trivia(prompt):
-    """Handles trivia generation with Groq and Hugging Face fallback."""
     if not prompt:
         return {"success": False, "error": "No prompt provided"}
-        
-    # 1. Try Groq (Fast Choice)
-    try:
-        print("[*] Attempting Groq Trivia Generation...")
-        groq_payload = {
-            "model": "openai/gpt-oss-120b",
-            "messages": [
-                {"role": "system", "content": "You are a Bible trivia generator. Output ONLY a valid JSON array of questions."},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.8,
-            "response_format": {"type": "json_object"}
-        }
-        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=20)
-        if resp.ok:
-            result = resp.json()
-            content = result['choices'][0]['message']['content']
-            parsed = json.loads(content)
-            
-            # Extract array if wrapped in object
-            if not isinstance(parsed, list):
-                for v in parsed.values():
-                    if isinstance(v, list):
-                        parsed = v
-                        break
-            
-            return {
-                "success": True,
-                "response": parsed,
-                "source": "groq"
+
+    trivia_system = (
+        "You are a Bible trivia generator. "
+        "Output ONLY a valid JSON array of trivia question objects. "
+        "No markdown, no explanation outside the JSON."
+    )
+
+    # 1. Gemini Flash (primary)
+    if GEMINI_API_KEY:
+        try:
+            print(f"[*] Gemini Trivia ({GEMINI_FLASH})...")
+            payload = {
+                "model": GEMINI_FLASH,
+                "messages": [
+                    {"role": "system", "content": trivia_system},
+                    {"role": "user",   "content": prompt}
+                ],
+                "temperature": 0.85,
+                "max_tokens": 4096,
+                "response_format": {"type": "json_object"}
             }
-        print(f"[!] Groq Trivia failed: {resp.status_code}")
-    except Exception as e:
-        print(f"[!] Groq Trivia exception: {e}")
+            result = _post(GEMINI_URL, GEMINI_API_KEY, payload, timeout=50)
+            parsed = _parse_json_array(result["choices"][0]["message"]["content"])
+            print(f"[+] Gemini generated {len(parsed)} trivia questions.")
+            return {"success": True, "response": parsed, "source": "gemini"}
+        except Exception as e:
+            print(f"[!] Gemini Trivia failed: {e}")
 
-    # 2. Fallback to Hugging Face
-    try:
-        print("[*] Falling back to Hugging Face Trivia...")
-        hf_payload = {"prompt": prompt}
-        resp = requests.post(HF_TRIVIA_URL, json=hf_payload, timeout=30)
-        if resp.ok:
-            result = resp.json()
-            raw_response = result.get('response', '')
-            
-            # Parse if it's a string
-            if isinstance(raw_response, str):
-                try:
-                    match = re.search(r'\[\s*\{.*\}\s*\]', raw_response, re.DOTALL)
-                    if match:
-                        raw_response = json.loads(match.group(0))
-                    else:
-                        raw_response = json.loads(raw_response)
-                except: pass
-            
-            return {
-                "success": True,
-                "response": raw_response,
-                "source": "huggingface"
+    # 2. Groq fallback
+    if GROQ_API_KEY:
+        try:
+            print(f"[*] Groq Trivia fallback ({GROQ_FALLBACK_HEAVY})...")
+            payload = {
+                "model": GROQ_FALLBACK_HEAVY,
+                "messages": [
+                    {"role": "system", "content": trivia_system},
+                    {"role": "user",   "content": prompt}
+                ],
+                "temperature": 0.8,
+                "max_tokens": 4096,
+                "response_format": {"type": "json_object"}
             }
-    except Exception as e:
-        print(f"[!] Hugging Face Trivia fallback failed: {e}")
+            result = _post(GROQ_URL, GROQ_API_KEY, payload, timeout=40)
+            parsed = _parse_json_array(result["choices"][0]["message"]["content"])
+            return {"success": True, "response": parsed, "source": "groq"}
+        except Exception as e:
+            print(f"[!] Groq Trivia fallback failed: {e}")
 
-    return {"success": False, "error": "All AI backends failed"}
+    return {"success": False, "error": "All trivia backends failed"}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  STANDARD CHAT  (Gemini primary → Groq fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+_CHAT_SYSTEM = (
+    "You are the AI Scribe — a knowledgeable biblical scholar within the Scriptorium. "
+    "Help users understand sacred texts, explain biblical history, answer theological questions, "
+    "and illuminate passages with accuracy, depth, and reverence. "
+    "Cite specific scripture references when relevant."
+)
+
+def handle_chat(message, history=None, model_id="llama-3-8b", temperature=0.7):
+    if not isinstance(history, list):
+        history = []
+
+    messages = [{"role": "system", "content": _CHAT_SYSTEM}, *history, {"role": "user", "content": message}]
+
+    # 1. Gemini Flash (primary)
+    if GEMINI_API_KEY:
+        for attempt in (1, 2):
+            try:
+                print(f"[*] Gemini Chat ({GEMINI_FLASH}) attempt {attempt}...")
+                payload = {"model": GEMINI_FLASH, "messages": messages, "temperature": temperature, "max_tokens": 2048}
+                result = _post(GEMINI_URL, GEMINI_API_KEY, payload, timeout=35)
+                return {"success": True, "response": result["choices"][0]["message"]["content"], "source": "gemini"}
+            except Exception as e:
+                print(f"[!] Gemini Chat attempt {attempt} failed: {e}")
+                if attempt == 1:
+                    time.sleep(1)
+
+    # 2. Groq fallback
+    if GROQ_API_KEY:
+        for attempt in (1, 2):
+            try:
+                print(f"[*] Groq Chat fallback ({GROQ_FALLBACK_CHAT}) attempt {attempt}...")
+                payload = {"model": GROQ_FALLBACK_CHAT, "messages": messages, "temperature": temperature, "max_tokens": 2048}
+                result = _post(GROQ_URL, GROQ_API_KEY, payload, timeout=35)
+                return {"success": True, "response": result["choices"][0]["message"]["content"], "source": "groq"}
+            except Exception as e:
+                print(f"[!] Groq Chat attempt {attempt} failed: {e}")
+                if attempt == 1:
+                    time.sleep(1)
+
+    return {"success": False, "error": "All chat backends failed"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SCRIPTORIUM CHAT  (Gemini Pro → Flash → Groq)
+# ─────────────────────────────────────────────────────────────────────────────
 def handle_scriptorium_chat(message, history=None, context=None):
-    """Handles chat specifically routed through the Scriptorium framework."""
     if history is None:
         history = []
-        
-    language = context.get('language', 'en') if context else 'en'
-    book = context.get('book', '') if context else ''
-    chapter = context.get('chapter', None) if context else None
-    turn_count = context.get('turn_count', len(history) // 2) if context else len(history) // 2
-    passage = context.get('passage_text', '') if context else ''
-    
-    # Detect genre
-    genre = detect_genre(book, chapter)
-    
-    # Get Dual Scalpel data for Swahili
-    scalpel_data = get_scalpel_context(message + " " + passage) if language == 'sw' else None
-    
-    # Build the enhanced system prompt
+
+    language    = context.get("language", "en") if context else "en"
+    book        = context.get("book", "") if context else ""
+    chapter     = context.get("chapter", None) if context else None
+    turn_count  = context.get("turn_count", len(history) // 2) if context else len(history) // 2
+    passage     = context.get("passage_text", "") if context else ""
+
+    genre        = detect_genre(book, chapter)
+    scalpel_data = get_scalpel_context(message + " " + passage) if language == "sw" else None
+
     system_prompt = build_scriptorium_prompt(
-        user_message=message,
-        passage_context=passage,
-        language=language,
-        genre=genre,
-        turn_count=turn_count,
-        scalpel_data=scalpel_data
+        user_message=message, passage_context=passage, language=language,
+        genre=genre, turn_count=turn_count, scalpel_data=scalpel_data
     )
-    
-    try:
-        print(f"[*] Attempting Scriptorium Chat with model {SCRIPTORIUM_DEFAULT_MODEL}...")
-        groq_payload = {
-            "model": MODEL_MAP[SCRIPTORIUM_DEFAULT_MODEL],
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *history,
-                {"role": "user", "content": message}
-            ],
-            "temperature": 0.6, # Slightly lower for deeper theological reasoning
-            "max_tokens": 1500
-        }
-        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=25)
-        if resp.ok:
-            result = resp.json()
-            return {
-                "success": True,
-                "response": result['choices'][0]['message']['content'],
-                "source": "groq",
-                "scriptorium_active": True,
-                "genre_detected": genre
-            }
-            
-        else:
-            print(f"[!] Primary Groq failed: {resp.status_code} - {resp.text}")
-            
-        # Fallback to 70b
-        fallback_model = MODEL_MAP["llama-3-70b"]
-        print(f"[!] Primary failed. Falling back to Scriptorium Chat with {fallback_model}...")
-        groq_payload["model"] = fallback_model
-        resp2 = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=20)
-        if resp2.ok:
-            result = resp2.json()
-            return {
-                "success": True,
-                "response": result['choices'][0]['message']['content'],
-                "source": "groq",
-                "scriptorium_active": True,
-                "genre_detected": genre
-            }
-        else:
-            print(f"[!] Fallback Groq failed: {resp2.status_code} - {resp2.text}")
-            
-    except Exception as e:
-        print(f"[!] Scriptorium Chat exception: {e}")
-        
+    messages = [{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": message}]
+
+    for model in [GEMINI_PRO, GEMINI_FLASH]:
+        if GEMINI_API_KEY:
+            try:
+                print(f"[*] Scriptorium Chat ({model})...")
+                payload = {"model": model, "messages": messages, "temperature": 0.6, "max_tokens": 1500}
+                result = _post(GEMINI_URL, GEMINI_API_KEY, payload, timeout=30)
+                return {"success": True, "response": result["choices"][0]["message"]["content"],
+                        "source": "gemini", "scriptorium_active": True, "genre_detected": genre}
+            except Exception as e:
+                print(f"[!] Scriptorium {model} failed: {e}")
+
+    if GROQ_API_KEY:
+        try:
+            print(f"[*] Scriptorium Groq fallback...")
+            payload = {"model": GROQ_FALLBACK_HEAVY, "messages": messages, "temperature": 0.6, "max_tokens": 1500}
+            result = _post(GROQ_URL, GROQ_API_KEY, payload, timeout=25)
+            return {"success": True, "response": result["choices"][0]["message"]["content"],
+                    "source": "groq", "scriptorium_active": True, "genre_detected": genre}
+        except Exception as e:
+            print(f"[!] Scriptorium Groq fallback failed: {e}")
+
     return {"success": False, "error": "Scriptorium backend failed"}
 
-def handle_scriptorium_trivia(mode, target, count, version, difficulty, language, book_name=None):
-    """Handles enhanced trivia generation for the Scriptorium framework."""
-    
-    genre = detect_genre(book_name) if book_name else detect_genre(target if mode == 'book' else None)
-    scalpel_data = get_scalpel_context(target) if language == 'sw' else None
-    
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SCRIPTORIUM TRIVIA  (Gemini Pro → Groq)
+# ─────────────────────────────────────────────────────────────────────────────
+def handle_scriptorium_trivia(mode, target, count, version, difficulty, language, book_name=None, excluded_questions=None):
+    genre        = detect_genre(book_name) if book_name else detect_genre(target if mode == "book" else None)
+    scalpel_data = get_scalpel_context(target) if language == "sw" else None
+
     prompt = build_scriptorium_trivia_prompt(
-        mode=mode,
-        target=target,
-        count=count,
-        version=version,
-        difficulty=difficulty,
-        language=language,
-        genre=genre,
-        scalpel_data=scalpel_data
+        mode=mode, target=target, count=count, version=version,
+        difficulty=difficulty, language=language, genre=genre, scalpel_data=scalpel_data
     )
-    
-    try:
-        print(f"[*] Attempting Scriptorium Trivia with model {SCRIPTORIUM_DEFAULT_MODEL}...")
-        groq_payload = {
-            "model": MODEL_MAP[SCRIPTORIUM_DEFAULT_MODEL],
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.8,
-            "max_tokens": 4096,
-            "response_format": {"type": "json_object"}
-        }
-        
-        # 120b doesn't strictly support json_object in the same way sometimes, so we ensure the prompt is very strict
-        # and fallback to 70b if it fails parsing
-        
-        resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=45)
-        
-        if not resp.ok:
-            print(f"[!] Primary failed ({resp.status_code}): {resp.text[:200]}")
-            print(f"[!] Falling back to Scriptorium Trivia with {MODEL_MAP['llama-3-70b']}...")
-            groq_payload["model"] = MODEL_MAP["llama-3-70b"]
-            resp = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=groq_payload, timeout=45)
-            
-        if resp.ok:
-            result = resp.json()
-            content = result['choices'][0]['message']['content']
-            finish_reason = result['choices'][0].get('finish_reason', 'unknown')
-            print(f"[*] Scriptorium Trivia response received. Finish reason: {finish_reason}, Content length: {len(content)} chars")
-            
-            parsed = json.loads(content)
-            
-            # Extract array if wrapped in object
-            if not isinstance(parsed, list):
-                for v in parsed.values():
-                    if isinstance(v, list):
-                        parsed = v
-                        break
-            
-            print(f"[*] Scriptorium generated {len(parsed)} questions (requested {count})")
-            
-            return {
-                "success": True,
-                "response": parsed,
-                "source": "groq",
-                "scriptorium_active": True
+
+    if excluded_questions:
+        prompt += "\nDo not repeat or paraphrase these previous questions. Use different facts and interpretive points:\n" + json.dumps(excluded_questions[-100:], ensure_ascii=False)
+
+    if GEMINI_API_KEY:
+        try:
+            print(f"[*] Scriptorium Trivia ({GEMINI_PRO})...")
+            payload = {
+                "model": GEMINI_PRO,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.8, "max_tokens": 4096,
+                "response_format": {"type": "json_object"}
             }
-            
-    except Exception as e:
-        print(f"[!] Scriptorium Trivia exception: {e}")
-        
+            result = _post(GEMINI_URL, GEMINI_API_KEY, payload, timeout=55)
+            parsed = _parse_json_array(result["choices"][0]["message"]["content"])
+            print(f"[+] Scriptorium Trivia: {len(parsed)} questions.")
+            return {"success": True, "response": parsed, "source": "gemini", "scriptorium_active": True}
+        except Exception as e:
+            print(f"[!] Scriptorium Gemini Trivia failed: {e}")
+
+    if GROQ_API_KEY:
+        try:
+            print(f"[*] Scriptorium Trivia Groq fallback...")
+            payload = {
+                "model": GROQ_FALLBACK_HEAVY,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.8, "max_tokens": 4096,
+                "response_format": {"type": "json_object"}
+            }
+            result = _post(GROQ_URL, GROQ_API_KEY, payload, timeout=45)
+            parsed = _parse_json_array(result["choices"][0]["message"]["content"])
+            return {"success": True, "response": parsed, "source": "groq", "scriptorium_active": True}
+        except Exception as e:
+            print(f"[!] Scriptorium Trivia Groq fallback failed: {e}")
+
     return {"success": False, "error": "Scriptorium trivia generation failed"}

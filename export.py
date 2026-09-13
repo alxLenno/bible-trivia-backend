@@ -197,6 +197,8 @@ LIGHT_TEMPLATE = """
             </div>
             
             <div class="insight">
+                <div class="insight-label">CORRECT ANSWER</div>
+                <p class="insight-text"><strong>{{ q.correct }}</strong></p>
                 <div class="insight-label">INSIGHT</div>
                 <p class="insight-text">{{ q.explanation }}</p>
             </div>
