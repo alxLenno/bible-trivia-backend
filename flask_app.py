@@ -403,16 +403,23 @@ def update_score(code):
                 if 'answers' in data:
                     p['answers'] = data['answers']
                 if data.get('finished'): p['finished'] = True
+        # NEVER downgrade status (e.g. reveal→playing or finished→playing).
+        # Only promote to 'finished' when every player is done.
+        current_status = row['status']
         all_finished = all(p.get('finished', False) for p in players)
-        status = 'finished' if all_finished else 'playing'
-        conn.execute('UPDATE rooms_v2 SET players = ?, status = ? WHERE code = ?', (json.dumps(players), status, code))
-        if status == 'finished' and row['status'] != 'finished':
+        if all_finished and current_status != 'finished':
+            new_status = 'finished'
+        else:
+            new_status = current_status  # keep whatever the room already has
+        conn.execute('UPDATE rooms_v2 SET players = ?, status = ? WHERE code = ?', (json.dumps(players), new_status, code))
+        if new_status == 'finished' and current_status != 'finished':
             config_data = json.loads(row['config'])
             config_data['questions'] = json.loads(row['questions']) if row['questions'] else []
             process_game_finish(conn, code, players, config_data)
         conn.commit()
         conn.close()
         return jsonify({'success': True})
+
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
