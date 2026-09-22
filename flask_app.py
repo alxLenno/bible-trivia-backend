@@ -615,5 +615,8 @@ def export_results():
         print(f"[ERROR] Export failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+from room_sync import install_room_routes
+install_room_routes(app, get_db, generate_code, process_game_finish)
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=5555)
