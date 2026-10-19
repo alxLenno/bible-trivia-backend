@@ -39,29 +39,38 @@ class RoomSyncTest(unittest.TestCase):
         return self.client.get('/api/rooms/ROOM').get_json()['room']
     def answer(self, uid, index=0, selected='Yes'):
         return self.post('score', {'uid':uid,'answers':[{'questionIndex':index,'selected':selected}], 'score':999999})
-    def test_round_progresses_without_host_and_finishes_once(self):
+    def test_host_manually_advances_and_finishes_once(self):
         self.post('start')
-        self.answer('a'); room=self.answer('b')
-        self.assertEqual(room['status'], 'reveal')
-        self.now.return_value=106
-        self.assertEqual(self.get()['currentQuestion'],1)
-        self.now.return_value=122
-        self.assertEqual(self.get()['status'],'reveal')
-        self.now.return_value=128
-        self.assertEqual(self.get()['status'],'finished')
-        self.post('end');self.post('start');self.post('next',{'index':0})
-        self.assertEqual(self.get()['status'],'finished')
-        self.assertEqual(self.finished,['ROOM'])
-    def test_stale_transitions_and_answers_cannot_rewind_or_skip(self):
+        self.answer('a'); self.answer('b')
+        self.now.return_value = 500
+        self.assertEqual(self.get()['status'], 'reveal')
+        self.assertEqual(self.get()['currentQuestion'], 0)
+        room = self.post('next', {'uid':'a', 'currentQuestion':0})
+        self.assertEqual(room['currentQuestion'], 1)
+        self.assertEqual(room['deadline'], 515)
+        self.now.return_value = 516
+        self.assertEqual(self.get()['status'], 'reveal')
+        self.post('next', {'uid':'a', 'currentQuestion':1})
+        self.assertEqual(self.get()['status'], 'finished')
+        self.client.post('/api/rooms/ROOM/next', json={'uid':'a','currentQuestion':1})
+        self.assertEqual(self.finished, ['ROOM'])
+
+    def test_guest_early_and_stale_advances_are_rejected(self):
         self.post('start')
-        self.post('next',{'index':8});self.post('reveal');self.post('end')
-        self.assertEqual(self.get()['status'],'playing')
-        self.answer('a');self.answer('b')
-        self.now.return_value=106
+        response = self.client.post('/api/rooms/ROOM/next', json={'uid':'a','currentQuestion':0})
+        self.assertEqual(response.status_code, 409)
+        self.answer('a'); self.answer('b')
+        for uid in ['b', None]:
+            response = self.client.post('/api/rooms/ROOM/next', json={'uid':uid,'currentQuestion':0})
+            self.assertEqual(response.status_code, 409)
+        self.post('next', {'uid':'a','currentQuestion':0})
+        self.now.return_value = 116
         self.get()
-        room=self.answer('a',0)
-        self.assertEqual(room['currentQuestion'],1)
-        self.assertEqual(len(room['players'][0]['answers']),1)
+        response = self.client.post('/api/rooms/ROOM/next', json={'uid':'a','currentQuestion':0})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.get()['currentQuestion'], 1)
+        self.assertEqual(self.get()['status'], 'reveal')
+
     def test_duplicate_answer_does_not_rescore(self):
         self.post('start')
         room=self.answer('a');score=room['players'][0]['score']

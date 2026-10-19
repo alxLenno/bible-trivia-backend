@@ -24,7 +24,7 @@ def install_room_routes(app, get_db, generate_code, process_game_finish):
     def tick(conn, room, now):
         if room['status'] not in ('playing', 'reveal'):
             return
-        if room['deadline'] is None:
+        if room['deadline'] is None and room['status'] == 'playing':
             room['deadline'] = now + (room['config'].get('timePerQuestion', 15) if room['status'] == 'playing' else 5)
         active = [p for p in room['players'] if not p.get('forfeited')]
         index = room['current_question']
@@ -38,14 +38,7 @@ def install_room_routes(app, get_db, generate_code, process_game_finish):
                         'correct': room['questions'][index]['correct'], 'isCorrect': False})
                     player['combo'] = 0
             room['status'] = 'reveal'
-            room['deadline'] = now + 5
-        elif room['status'] == 'reveal' and now >= room['deadline']:
-            if index + 1 >= len(room['questions']):
-                finish(conn, room)
-            else:
-                room['current_question'] += 1
-                room['status'] = 'playing'
-                room['deadline'] = now + room['config'].get('timePerQuestion', 15)
+            room['deadline'] = None
 
     def snapshot(room, now):
         return dict(code=room['code'], hostId=room['host_uid'], hostName=room['host_name'],
@@ -83,6 +76,22 @@ def install_room_routes(app, get_db, generate_code, process_game_finish):
                 else:
                     room['status'] = 'playing'
                     room['deadline'] = now + room['config'].get('timePerQuestion', 15)
+            elif action in ('next', 'end'):
+                expected = data.get('currentQuestion')
+                if data.get('uid') != room['host_uid'] or not player or player.get('forfeited'):
+                    error = 'Only the host can advance the round.'
+                elif expected != room['current_question']:
+                    error = 'The room has already moved. Wait for synchronization.'
+                elif room['status'] != 'reveal':
+                    error = 'Wait until the answers are revealed before continuing.'
+                elif room['current_question'] + 1 >= len(room['questions']):
+                    finish(conn, room)
+                elif action == 'end':
+                    error = 'Complete the remaining questions first.'
+                else:
+                    room['current_question'] += 1
+                    room['status'] = 'playing'
+                    room['deadline'] = now + room['config'].get('timePerQuestion', 15)
             elif action == 'questions':
                 if room['status'] != 'waiting':
                     error = 'Questions cannot change after the round starts.'
@@ -110,7 +119,7 @@ def install_room_routes(app, get_db, generate_code, process_game_finish):
                 player['forfeited'] = True
                 player['finished'] = True
                 tick(conn, room, now)
-            # Legacy reveal/next/end requests only tick the clock. They cannot rewind or skip a question.
+            # Reveal requests cannot bypass the shared answer deadline.
             if before != json.dumps(room, sort_keys=True):
                 room['revision'] += 1
                 conn.execute('UPDATE rooms_v2 SET players=?, questions=?, status=?, current_question=?, deadline=?, revision=? WHERE code=?',
